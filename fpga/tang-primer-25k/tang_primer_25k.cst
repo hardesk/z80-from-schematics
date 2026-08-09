@@ -1,0 +1,22 @@
+// Tang Primer 25K (GW5A-LV25MG121NES) pin constraints for the RZ80 SoC.
+// Pin sites taken from Project Apicula's examples/gw5a/primer25k.cst
+// (YosysHQ/apicula, MIT licence) and Sipeed's dock schematic naming.
+
+// 50 MHz crystal
+IO_LOC  "clk" E2;
+IO_PORT "clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE BANK_VCCIO=3.3;
+
+// BL616 USB-UART: FPGA receives on B3, transmits on C3
+IO_LOC  "uart_rx" B3;
+IO_PORT "uart_rx" IO_TYPE=LVCMOS33 PULL_MODE=UP BANK_VCCIO=3.3;
+IO_LOC  "uart_tx" C3;
+IO_PORT "uart_tx" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+// Push-buttons (board pull-downs -> active high).
+// key[0] = H10 ("RST" silk) resets the Z80; key[1] = H11 is spare.
+IO_LOC  "key[0]" H10;
+IO_PORT "key[0]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=OFF BANK_VCCIO=3.3;
+IO_LOC  "key[1]" H11;
+IO_PORT "key[1]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=OFF BANK_VCCIO=3.3;
+
+// vim: set et sw=4 ts=4:
