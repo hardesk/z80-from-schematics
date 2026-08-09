@@ -6,7 +6,10 @@
 //
 //   1. wait for cold-start "Memory top?"  -> answer CR
 //   2. wait for the banner "Ok"           -> type "PRINT 123+456" CR
-//   3. wait for "579"                     -> PASS (exit 0)
+//   3. wait for "579"                     -> press button 0 (~2 ms, with
+//      a bouncy release, like the real switch)
+//   4. wait for warm-start "C|W"          -> answer "W"
+//   5. wait for "Ok"                      -> PASS (exit 0)
 //
 // Build with -GBAUD=781250 so one UART bit is 16 core clocks. Run from
 // a directory containing rom.mem (top.v's ROM_FILE default), e.g. build/.
@@ -56,9 +59,22 @@ int main(int argc, char** argv) {
 
     long long tx_wait = 0, tx_cnt = 0;
     long long steps = 0;
+    long long btn_timer = 0;      // >0: button-0 press in progress
+    const long long BTN_PRESS  = 200000;   // ~2 ms in half-clk steps
+    const long long BTN_BOUNCE = 20000;    // bouncy tail of the release
     const long long MAX_STEPS = 4000000000LL;   // hard stop
 
     while (steps < MAX_STEPS) {
+        // button-0 press with a bouncing release: solid low, then
+        // chatter between low/high, then released. The reset stretch
+        // in top.v must swallow the chatter and emit ONE clean reset.
+        if (btn_timer > 0) {
+            btn_timer--;
+            if (btn_timer == 0)              t->button = 3;  // released
+            else if (btn_timer < BTN_BOUNCE) t->button = ((btn_timer / 1000) & 1) ? 3 : 2;
+            else                             t->button = 2;  // held
+        }
+
         t->clk = !t->clk;
         t->eval();
         steps++;
@@ -108,7 +124,16 @@ int main(int argc, char** argv) {
                         tx_wait = 20LL * BIT_TICKS;
                         send_line("PRINT 123+456");
                     } else if (stage == 2 && tail.find("579") != std::string::npos) {
-                        printf("\n[sim_top] PASS: BASIC booted over UART, 123+456=579 (%lld half-clks)\n", steps);
+                        printf("\n[sim_top] 123+456=579 OK -- pressing button 0 (reset)\n");
+                        tail.clear();
+                        btn_timer = BTN_PRESS;
+                        stage = 4;
+                    } else if (stage == 4 && tail.find("C|W") != std::string::npos) {
+                        stage = 5; tail.clear();
+                        tx_wait = 20LL * BIT_TICKS;
+                        send_byte('W');
+                    } else if (stage == 5 && tail.find("Ok") != std::string::npos) {
+                        printf("\n[sim_top] PASS: boot, arithmetic, button warm-restart all good (%lld half-clks)\n", steps);
                         delete t;
                         return 0;
                     }

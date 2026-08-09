@@ -44,14 +44,21 @@ module top #(
     always @(posedge clk) ckdiv <= ckdiv + 1'b1;
     wire clk_cpu = ckdiv[CLK_DIV_BITS-1];
 
-    // ---- power-on + button reset (core clk domain) ----
-    reg [11:0] por_cnt  = 12'hFFF;
+    // ---- power-on + button-0 reset (core clk domain) ----
+    // One up-counter serves both: it starts at 0 after configuration
+    // (power-on reset) and is cleared whenever button 0 is held, then
+    // must count out ~5 ms after release before reset_n deasserts.
+    // The stretch swallows switch bounce (the board's own counter
+    // example needed a debouncer for these buttons) and is orders of
+    // magnitude longer than the core's ~5-phase reset filter.
+    reg [15:0] rst_cnt  = 16'd0;
     reg [1:0]  btn_sync = 2'b11;
     always @(posedge clk_cpu) begin
         btn_sync <= {btn_sync[0], button[0]};
-        if (por_cnt != 0) por_cnt <= por_cnt - 1'b1;
+        if (!btn_sync[1])              rst_cnt <= 16'd0;      // pressed
+        else if (rst_cnt != 16'hFFFF)  rst_cnt <= rst_cnt + 1'b1;
     end
-    wire reset_n = (por_cnt == 0) && btn_sync[1];
+    wire reset_n = (rst_cnt == 16'hFFFF);
 
     // ---- Z80 core ----
     wire [15:0] addr;
