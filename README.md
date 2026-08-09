@@ -52,6 +52,10 @@ See [tests/basic/README.md](tests/basic/README.md) for the BASIC ROMs we vendor
 (NASCOM BASIC 4.7 and 1 KiB Tiny BASIC), the I/O conventions, and the runner's
 interactive controls (Enter, Backspace, Ctrl-C / Ctrl-Space = BREAK, Ctrl-\\ = exit).
 
+Or run it on real hardware: [fpga/icepi-zero](fpga/icepi-zero/README.md) deploys
+the RTL core + BASIC ROM to an IcePi Zero (Lattice ECP5) with the console on the
+board's USB-UART.
+
 
 ## Build & test
 
