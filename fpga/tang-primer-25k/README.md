@@ -73,12 +73,27 @@ is the same signature). JTAG frequency, openFPGALoader master, and the
 GW5A footer-checksum PR make no difference; the corruption is
 deterministic.
 
-Fix: update the dock's debugger firmware —
-[Sipeed's update procedure](https://wiki.sipeed.com/hardware/en/tang/common-doc/update_debugger.html)
-(short the two test points on the underside while plugging USB, then
-flash with BouffaloLab DevCube; works on macOS) — or flash the
-open-source [bl616_dirtyjtag](https://github.com/pepijndevos/bl616_dirtyjtag)
-firmware, which openFPGALoader supports natively.
+Fix (verified on this board): update the dock's debugger firmware per
+[Sipeed's procedure](https://wiki.sipeed.com/hardware/en/tang/common-doc/update_debugger.html) —
+short the `3V3` & `TDO` test points (underside, "Debugger" pad group by
+the corner mounting hole) while plugging USB so the BL616 enumerates as
+`/dev/cu.usbmodem*`, then flash Sipeed's
+`bl616_fpga_partner_25kDock.bin` (release 2025030317). No DevCube GUI
+needed — the pip-installable CLI works from macOS:
+
+    .venv/bin/pip install bflb-iot-tool
+    .venv/bin/bflb-iot-tool --chipname bl616 --interface uart \
+        --port /dev/cu.usbmodem* --baudrate 2000000 \
+        --addr 0x0 --firmware bl616_fpga_partner_25kDock.bin --single
+
+Replug normally afterwards; the debugger's USB serial number becomes
+the firmware release id, so the tty paths change (e.g.
+`/dev/cu.usbserial-20250303171` for the UART console). With the
+updated firmware, `make prog` reports `DONE` and BASIC comes up —
+verified: 10 MHz Z80, banner, arithmetic, RUN loop at ~770 lines/s,
+Ctrl-C BREAK. (Alternative: the open-source
+[bl616_dirtyjtag](https://github.com/pepijndevos/bl616_dirtyjtag)
+firmware, which openFPGALoader supports natively.)
 
 ## Variants
 
