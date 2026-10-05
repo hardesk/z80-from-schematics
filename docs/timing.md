@@ -6,6 +6,15 @@ All timing is expressed in **phases**. Each Z80 T-state = two phases:
 T_n; "set at T_n.N" means entering phi=1 of T_n. WAIT is sampled at the **.N** of T2
 (and of any inserted Tw). Source: Zilog UM0080 timing diagrams (precedence rule 1).
 
+For the Tang Primer external bus, the 30 MHz sampler detects each external CLK
+edge after synchronization. It pipelines `/WAIT` alongside CLK, so the core
+uses the WAIT value captured at the sampler tick that first observed the
+falling edge. The core latches that value on entry to `phi=1`; the latched
+decision holds T2/Tw at the following rising-edge phase step. Changing `/WAIT`
+after the falling-edge sample does not change that decision. The sampler adds
+latency to the observation of both pins, so this is an edge-aligned digital
+model, not a zero-delay physical latch on the external CLK pin.
+
 Legend: `↓` = assert (drive low for active-low pins), `↑` = deassert.
 
 ## M1 — opcode fetch (4 T-states: T1 T2 T3 T4)
@@ -66,6 +75,19 @@ not part of the read window.
 - **T1.N**: `pin_mreq_n ← 0`; drive `pin_data_out`, `pin_data_drive ← 1`.
 - **T2.N**: sample `pin_wait_n`; insert `Tw` if asserted. `pin_wr_n ← 0`.
 - **T3.N**: `pin_wr_n ← 1`; `pin_mreq_n ← 1`; `pin_data_drive ← 0`.
+
+Inserted Tw states hold `/WR` continuously low, together with `/MREQ` and
+stable address/data. Internally Tw reuses `t_state=2`; its rising half must
+not be decoded as the initial T2.P before `/WR` first asserts. The RTL keeps
+the registered write strobe across the stalled `.N → .P` transition; the C
+phase engine applies the same rule. `/WR` is released only at final T3.N.
+
+In this implementation, the first `/WR` assertion and the WAIT sample both
+occur at T2.N. A peripheral that starts asserting WAIT only after seeing
+`/WR` low is too late for that write, regardless of how long it then holds
+WAIT. WAIT must already meet the falling-edge sample deadline; preasserting
+WAIT before the write is one way to do that. A late WAIT can instead stall
+the following transaction. The write-strobe hold does not change this rule.
 
 ## I/O read (4 T-states: T1 T2 Tw T3 — one automatic wait state)
 
@@ -141,3 +163,7 @@ release is modeled with output-enable lines on the pin mux.
 WAIT is sampled at `.N` of T2 in memory M-cycles, at `.N` of the automatic Tw in I/O
 cycles, and at `.N` of T2 (and inserted Tw) in M1. While WAIT is low, the M-cycle
 holds its current bus state and re-samples each subsequent `.N` until WAIT releases.
+
+`make bus_controls` tests the sampling edge and continuous memory/IO write
+strobes through 20 inserted wait states, with and without clock enables.
+`tests/common/test_wait_write.c` covers the same write-strobe behavior in C.
