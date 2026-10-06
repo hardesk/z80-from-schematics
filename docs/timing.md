@@ -114,14 +114,48 @@ contract is the same.)
 
 Maskable INT accepted at the end of the current instruction if `IFF1=1` and INT is
 sampled low at the **rising edge of the last T-state**. The acknowledge M-cycle is an
-M1-like cycle with **two automatic wait states** and a distinctive strobe:
-- `pin_m1_n ← 0` and `pin_iorq_n ← 0` together (instead of mreq) to fetch the vector.
-- T1 T2 Tw Tw (T3 T4 for the refresh tail).
-- IM0: executes the bus-supplied opcode (usually RST). IM1: `RST 38h`. IM2: forms
-  address `{I, vector}` and reads the handler pointer.
+M1-like cycle with **two automatic wait states** ([Zilog UM0080, Figure 9](https://www.zilog.com/docs/z80/um0080.pdf)):
+
+- T1.P: assert `/M1`, with PC on the address bus.
+- First automatic Tw.N: assert `/IORQ`, keeping `/M1` low. `/RD` and `/WR`
+  stay high; the device recognizes the `/M1` + `/IORQ` overlap.
+- Second automatic Tw.N: sample `/WAIT`. Repeat this Tw while the saved sample
+  is low, retaining the acknowledge address and strobes.
+- On leaving the final Tw for T3.P: consume the vector/opcode and release both
+  `/M1` and `/IORQ`. Refresh occupies T3/T4, with `/MREQ` low T3.N through T4.P.
+- The implementation counts T1, T2, Tw, Tw, T3, T4 as states 1–6. Thus WAIT
+  capture is state 4.N, data is consumed before advancing to state 5.P, and
+  refresh uses states 5/6. IM1/IM2 append one internal state (7) before pushing PC.
+- IM0 decodes the supplied opcode without incrementing PC: RST pushes the
+  interrupted PC; CALL/JP read their operands from memory at that PC. The 6T
+  acknowledge replaces the normal 4T opcode fetch. IM1 ignores the byte and
+  enters `0038h`; IM2 reads the handler pointer from `{I, vector}`.
+
+`make bus_controls` exercises IM0 RST/CALL/JP/NOP, IM1, and IM2 with a nonzero
+vector, with and without WAIT and on HALT exit, in both core clock-enable
+configurations. The
+interrupt device drives data only during acknowledge. `test_int_ack.c` checks
+the same cases against the C model.
 
 NMI: similar to M1 but no data fetch used for vector; pushes PC and jumps to `0066h`;
 copies `IFF1→IFF2`, clears `IFF1`.
+
+### External-clock reset release (Tang Primer)
+
+RESET assertion holds the core and clears a sampler-domain release pipeline.
+Deassertion passes through three sampler registers before a fresh synchronized
+rising CLK can release the core. CLK edges already in flight when RESET rises
+cannot start T1; the following falling CLK starts the first opcode read at 0000.
+This avoids an early first fetch caused by accepting a pre-release CLK edge.
+`tb_reset_top.v` sweeps 200 RESET-release offsets across a 1 MHz clock and checks
+that the first `JP 0100h` survives WAIT stretching. This establishes the RTL
+ordering; hardware retesting is still needed for the intermittent zero opcode
+reported in `event_tests_20261007/reset_low_release_high`. That capture also
+shows WAIT low only at 37.120–37.147 us, already high at the T2 falling CLK
+(37.947 us); data remains 00 until after RD ends (38.560 us), with C3 first
+visible at 39.040 us. A CPU correctly sampling WAIT must consume 00 in that
+case. The peripheral must keep WAIT low across the sample until data is ready;
+the reset ordering fix alone does not prove this driver-side race is gone.
 
 ## HALT
 
@@ -139,7 +173,7 @@ copies `IFF1→IFF2`, clears `IFF1`.
     M1.
   - INT / NMI sampled at the rising edge of the last T-state of each
     NOP M-cycle. When sampled active (and IFF1=1 for INT), the next
-    M-cycle is the ack (INTA = 7 T, NMI ack = 5 T). PC stays put —
+    M-cycle is the ack (IM1/IM2 INTA = 7 T, NMI ack = 5 T). PC stays put —
     the ack's saved return address is `halt_addr + 1`, which is what
     RETN must restore.
 

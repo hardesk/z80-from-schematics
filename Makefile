@@ -381,11 +381,19 @@ bus_controls: dirs
 	    -Ptb_wait_write.USE_CEN=$$cen -o $(BUILD)/tb_wait_write.vvp \
 	    $(RTL_SRCS) $(TESTS)/iverilog/tb_wait_write.v; \
 	  $(VVP) $(BUILD)/tb_wait_write.vvp; \
+	  $(IVERILOG) -g2012 -I$(RTL) -s tb_int_ack \
+	    -Ptb_int_ack.USE_CEN=$$cen -o $(BUILD)/tb_int_ack.vvp \
+	    $(RTL_SRCS) $(TESTS)/iverilog/tb_int_ack.v; \
+	  $(VVP) $(BUILD)/tb_int_ack.vvp; \
 	done
 	@$(IVERILOG) -g2012 -I$(RTL) -s tb_wait_top -o $(BUILD)/tb_wait_top.vvp \
 	  $(RTL_SRCS) fpga/tang-primer-25k/top.v fpga/icepi-zero/uart.v \
 	  $(TESTS)/iverilog/tb_wait_top.v
 	@$(VVP) $(BUILD)/tb_wait_top.vvp
+	@$(IVERILOG) -g2012 -I$(RTL) -s tb_reset_top -o $(BUILD)/tb_reset_top.vvp \
+	  $(RTL_SRCS) fpga/tang-primer-25k/top.v fpga/icepi-zero/uart.v \
+	  $(TESTS)/iverilog/tb_reset_top.v
+	@$(VVP) $(BUILD)/tb_reset_top.vvp
 
 iverilog: dirs
 	@if [ -f $(TESTS)/iverilog/tb_z80.v ]; then \
