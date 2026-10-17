@@ -14,7 +14,9 @@ module tb_wait_top;
     tri [7:0] z80_d;
     wire z80_m1_n, z80_mreq_n, z80_iorq_n, z80_rd_n, z80_wr_n;
     wire z80_rfsh_n, z80_halt_n, uart_tx;
-    top #(.ROM_FILE("tests/iverilog/zero.mem")) dut (
+    // AY_ENABLE=0: the AY needs the ay-3-8913 submodule, which CI does not
+    // check out; fpga/tang-primer-25k `make sim_ay` covers it.
+    top #(.ROM_FILE("tests/iverilog/zero.mem"), .AY_ENABLE(1'b0)) dut (
         .clk(clk), .uart_rx(1'b1), .uart_tx(uart_tx), .key(2'b00),
         .z80_clk(z80_clk), .z80_a(z80_a), .z80_d(z80_d),
         .z80_m1_n(z80_m1_n), .z80_mreq_n(z80_mreq_n),

@@ -1,0 +1,4 @@
+[submodule "fpga/third_party/ay-3-8913"]
+	path = fpga/third_party/ay-3-8913
+	url = git@github.com:hardesk/ay-3-8913.git
+	branch = core-split

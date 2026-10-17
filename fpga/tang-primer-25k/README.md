@@ -108,6 +108,66 @@ sbc build shows that `/WAIT` on J3. Board deltas:
 | P&R | nextpnr-ecp5 + ecppack | nextpnr-himbaechel + apycula `gowin_pack` |
 | Bitstream | `top.bit`, `-b icepi-zero` | `top_{sbc,chip}.fs`, `-b tangprimer25k` |
 
+## AY-3-8912 sound (chip build)
+
+`zx_ay.v` adds a ZX Spectrum 128-compatible AY to the chip build, so a
+48K Spectrum with this board in its CPU socket plays 128K AY music. The
+chip is rejunity's AY-3-8913 core (`../third_party/ay-3-8913`, a git
+submodule — clone with `--recursive` or run `git submodule update --init`).
+
+| | |
+|---|---|
+| Ports | `OUT (0xFFFD)` select register, `OUT (0xBFFD)` write, `IN (0xFFFD)` read (128K partial decode: A15, A14, A1) |
+| Clock | fixed 1.77345 MHz (the 128K's AY clock) from the 50 MHz crystal, whatever the host's Z80 CLK — e.g. the RP2350 driver's 5–6 MHz. `make AY_CLK_FROM_CPU=1` uses Z80 CLK / 2 instead, as wired in a real 128K (right pitch only at a 3.5469 MHz CLK) |
+| Readback | answered inside the FPGA; J3's data bus is never driven on reads. Unused register bits read as 0, like a real AY |
+| key[1] (H11) | toggles the AY on/off (starts on; no visible feedback) — use *off* on a 128K/+2 or with an AY add-on, which already answer these ports |
+| Build switches | `AY_ENABLE` (`top.v`); `make AY_STEREO=1` for ABC stereo |
+
+The AY chip and its DACs run on the crystal; only the port decode, the
+write capture and the readback register sit on the Z80 clock, and writes
+and readback cross between the two through synchronizers (`zx_ay.v`).
+A stopped or slow Z80 CLK therefore does not stop the sound.
+
+Audio leaves as two 50 MHz sigma-delta bitstreams (0/3.3 V) on one dock
+PMOD:
+
+| PMOD pin | Ball | `AY_STEREO=0` (default) | `AY_STEREO=1` |
+|---|---|---|---|
+| 1 (IO0) | D11 | `audio_l` = A + B + C | `audio_l` = A + B/2 |
+| 2 (IO1) | G11 | `audio_r` = A + B + C | `audio_r` = C + B/2 |
+| 5, 11 | — | GND | GND |
+
+**MuseLab PMOD-AUDIO v1.2** (iCESugar, "MUSE" silk) plugs straight in. Its
+speaker amp (PAM8403) is fed from pin 1 only, through the volume pot and
+1 µF + 22 kΩ; the right channel's input parts are not fitted. That's why
+the default puts the full mono mix on both pins. Its 3.5 mm jack is wired
+directly to pins 1/2 with no filter, so treat it as a raw bitstream, not
+a headphone or line output.
+
+**Stereo amplifier** (`make AY_STEREO=1`): no active circuit is needed,
+only a passive RC low-pass and a DC-blocking capacitor per channel into
+the amp's line input (RCA / 3.5 mm, or the L/R/GND input pads of a
+PAM8403/TPA31xx board):
+
+    pin 1/2 ──[1 kΩ]──┬──[1 µF]──> amp L / R in    fc ≈ 16 kHz
+                      │                            (2 × 1 kΩ/10 nF stages
+                    [10 nF]                         for less hiss)
+                      │
+    PMOD GND ─────────┴──────────> amp input GND
+
+Peak level is about 2.5 Vpp, which is hot for a line input; start with
+the amp's volume low. Never drive a speaker from a PMOD pin directly, and
+never ground the speaker minus of a class-D (bridged) amp.
+
+Quick check from BASIC (≈554 Hz tone on A, then read R8 back → 15;
+silence with `OUT 65533,8: OUT 49149,0`):
+
+    OUT 65533,7: OUT 49149,62
+    OUT 65533,8: OUT 49149,15
+    OUT 65533,0: OUT 49149,200
+    OUT 65533,1: OUT 49149,0
+    OUT 65533,8: PRINT IN 65533
+
 ## Toolchain — venv, no system packages
 
 `make venv` pip-installs the whole open Gowin flow into `.venv/`:
@@ -169,6 +229,10 @@ per-character delay (1 ms is plenty): a character now arrives every
     make sim_tiny   # 1K Tiny BASIC (SIM_BAUD=240000: the hardware's pacing)
     make ci         # all of these, both bitstreams, the Tiny BASIC
                     # bitstream and the top-level `make bus_controls`
+    make sim_ay     # (not in ci) Icarus: chip-build top against a Spectrum bus model
+                    # (I/O cycles WAIT-stretched like the RP2350 driver) —
+                    # AY ports, readback, pitch, mono and stereo mix, the
+                    # Z80 CLK / 2 clock, and the AY built out (AY_ENABLE=0)
 
 The PLL is a black box in simulation; a /12 toggle divider stands in
 (4.17 MHz) and the Makefile overrides `CORE_HZ` to match. Script: answer
@@ -182,7 +246,8 @@ console transcript byte for byte with the C model's
 
 The chip build is exercised by the repo-level `make bus_controls`
 (`tests/iverilog/tb_wait_top.v`, `tb_reset_top.v`), which instantiate
-this `top.v` with an external 1 MHz clock on the header.
+this `top.v` with an external 1 MHz clock on the header (AY built out:
+CI does not check out the AY submodule).
 
 `make ci` is what GitHub Actions runs: on every push to this branch
 (`.github/workflows/fpga-tang-primer-25k.yml`) and nightly with this branch

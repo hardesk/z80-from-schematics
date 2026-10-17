@@ -13,11 +13,22 @@ IO_LOC  "uart_tx" C3;
 IO_PORT "uart_tx" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
 
 // Push-buttons (board pull-downs -> active high).
-// key[0] = H10 ("RST" silk) resets the Z80; key[1] = H11 is spare.
+// key[0] = H10 ("RST" silk) resets the Z80; key[1] = H11 toggles the AY
+// (chip build).
 IO_LOC  "key[0]" H10;
 IO_PORT "key[0]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=OFF BANK_VCCIO=3.3;
 IO_LOC  "key[1]" H11;
 IO_PORT "key[1]" IO_TYPE=LVCMOS33 PULL_MODE=DOWN DRIVE=OFF BANK_VCCIO=3.3;
+
+// AY audio on a dock PMOD: Pmod pin 1 = D11, pin 2 = G11 (from the dock
+// schematic; apicula's pmod_keys list is not in Pmod pin order).
+// GND = 5/11, 3V3 = 6/12. Matches MuseLab's PMOD-AUDIO v1.2 (iCESugar):
+// pin 1 IL -> jack L + PAM8403 speaker amp, pin 2 IR -> jack R only.
+// 50 MHz sigma-delta; AY_STEREO picks the mix. Low in the sbc build.
+IO_LOC  "audio_l"    D11;
+IO_PORT "audio_l"    IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+IO_LOC  "audio_r"    G11;
+IO_PORT "audio_r"    IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
 
 // Z80 bus on the dock's J3 2x20 header.  J3-11 is fixed +5 V and J3-12
 // is fixed GND; neither is an FPGA pin.  All FPGA I/O below is 3.3 V only

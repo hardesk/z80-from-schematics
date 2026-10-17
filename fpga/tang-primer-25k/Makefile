@@ -14,6 +14,9 @@
 #                compared byte for byte with the C model's (add
 #                SIM_BAUD=240000 for the hardware's pacing)
 #   make sim_uart  uart.v at 4 and 3.5 MHz against BAUD: TX edges, RX at +-3 %
+#   make sim_ay  iverilog: chip-build AY test (ports, readback, pitch, mix)
+#   make AY_STEREO=1  ABC stereo on the audio pins (default 0: mono on both)
+#   make AY_CLK_FROM_CPU=1  AY clock = Z80 CLK / 2 (default: fixed 1.77345 MHz)
 #   make prog MODE=sbc|chip    load bitstream to SRAM (lost on power-cycle)
 #   make flash MODE=sbc|chip   write bitstream to SPI flash (persistent)
 #   make timing  show nextpnr's max-frequency summary for both builds
@@ -44,6 +47,14 @@ IVERILOG ?= iverilog
 VVP      ?= vvp
 
 ROM_HEX  ?= $(ROOT)/tests/basic/nascom_basic_4_7_rc2014.hex
+# AY audio pins: 0 = A+B+C mono on both (MuseLab PMOD-AUDIO speaker),
+# 1 = ABC stereo (L = A+B/2, R = C+B/2) for a stereo amp
+AY_STEREO ?= 0
+# AY clock: 0 = fixed 1.77345 MHz (any host Z80 clock, e.g. the RP2350
+# driver), 1 = Z80 CLK / 2 as wired in a real Spectrum 128
+AY_CLK_FROM_CPU ?= 0
+AY_CFG := $(AY_STEREO)$(AY_CLK_FROM_CPU)
+
 # Writes below ROM_PROTECT_TOP are dropped (the ROM). Default: the end of
 # the ROM image rounded up to 1 KiB (hex2mem.py --top) -- 8192 for NASCOM
 # BASIC, 1024 for the 1K Tiny BASIC, which keeps its variables and stack
@@ -54,7 +65,12 @@ endif
 
 CORE_SRCS := $(wildcard $(ROOT)/rtl/*.v)
 CORE_INCS := $(wildcard $(ROOT)/rtl/*.vh)
-SOC_SRCS  := top.v $(ICEPI)/uart.v
+SOC_SRCS  := top.v zx_ay.v $(ICEPI)/uart.v
+
+# AY-3-8913 core: git submodule (git submodule update --init)
+AY_DIR    := ../third_party/ay-3-8913/src
+AY_SRCS   := $(addprefix $(AY_DIR)/,ay8913_core.v tone.v noise.v envelope.v \
+             signal_edge.v attenuation.v pwm.v)
 
 YOSYS      := $(abspath $(VENV))/bin/yowasp-yosys
 NEXTPNR    := $(abspath $(VENV))/bin/yowasp-nextpnr-himbaechel-gowin
@@ -74,7 +90,7 @@ MODE ?= sbc
 # stem of the pattern rules below without any directory part
 STEM = $(notdir $*)
 
-.PHONY: all venv fs sbc chip sim sim_real sim_tiny prog flash timing sim_uart ci clean distclean FORCE
+.PHONY: all venv fs sbc chip sim sim_real sim_tiny sim_ay prog flash timing sim_uart ci clean distclean FORCE
 all: fs
 
 # ---- toolchain venv (created before any tools are installed/used) ----
@@ -99,9 +115,12 @@ $(BUILD)/rom.mem: $(ROM_HEX) $(ICEPI)/hex2mem.py $(BUILD)/rom.cfg
 	@mkdir -p $(BUILD)
 	$(PYTHON) $(ICEPI)/hex2mem.py $< $@
 
-$(BUILD)/src: $(CORE_SRCS) $(CORE_INCS) $(SOC_SRCS)
+$(AY_DIR)/ay8913_core.v:
+	@echo "AY core missing: run 'git submodule update --init'"; exit 1
+
+$(BUILD)/src: $(CORE_SRCS) $(CORE_INCS) $(SOC_SRCS) $(AY_SRCS)
 	@mkdir -p $(BUILD)/src
-	cp $(CORE_SRCS) $(CORE_INCS) $(SOC_SRCS) $(BUILD)/src/
+	cp $(CORE_SRCS) $(CORE_INCS) $(SOC_SRCS) $(AY_SRCS) $(BUILD)/src/
 	@touch $@
 
 $(BUILD)/tang_primer_25k.cst: tang_primer_25k.cst
@@ -120,10 +139,17 @@ YOSYS_QUIET := -v 2 -Q -T
 # the core's trace counters and memories, tri-state notes, BRAM map ranges.
 YOSYS_FILTER := grep --line-buffered -vE 'port Q\[|Drivers conflicting|Replacing memory|limited support for tri-state|out of bounds on signal|Latch inferred for signal .\\z80_core'
 
-$(BUILD)/top_%.synth.json: $(BUILD)/src $(BUILD)/rom.mem $(VENV)/.ok
+# AY options are baked into the netlist: a stamp file per setting forces a
+# re-synth when they change.
+$(BUILD)/ay_cfg.$(AY_CFG):
+	@mkdir -p $(BUILD)
+	rm -f $(BUILD)/ay_cfg.*
+	touch $@
+
+$(BUILD)/top_%.synth.json: $(BUILD)/src $(BUILD)/rom.mem $(VENV)/.ok $(BUILD)/ay_cfg.$(AY_CFG)
 	@rm -f $@
 	cd $(BUILD) && $(YOSYS) $(YOSYS_QUIET) -l yosys_$(STEM).log -p \
-	  'read_verilog -Isrc src/*.v; hierarchy -top top -chparam EXTERNAL_BUS $(EXTBUS_$(STEM)) -chparam ROM_PROTECT_TOP $(ROM_PROTECT_TOP); synth_gowin -top top -family gw5a -nolutram -json top_$(STEM).synth.json' \
+	  'read_verilog -Isrc src/*.v; hierarchy -top top -chparam EXTERNAL_BUS $(EXTBUS_$(STEM)) -chparam ROM_PROTECT_TOP $(ROM_PROTECT_TOP) -chparam AY_STEREO $(AY_STEREO) -chparam AY_CLK_FROM_CPU $(AY_CLK_FROM_CPU); synth_gowin -top top -family gw5a -nolutram -json top_$(STEM).synth.json' \
 	  2>&1 | $(YOSYS_FILTER)
 	@test -f $@ || { echo "yosys failed, see $(BUILD)/yosys_$(STEM).log"; exit 1; }
 
@@ -232,6 +258,22 @@ $(BUILD)/$(TINY_DIR)/Vtop: $(BUILD)/src sim_top.cpp $(ICEPI)/hex2mem.py
 
 sim_tiny: $(BUILD)/$(TINY_DIR)/Vtop $(BUILD)/rom_tiny.mem
 	cd $(BUILD) && ./$(TINY_DIR)/Vtop tiny
+
+# ---- AY simulation (Icarus): chip-build top against a Spectrum bus
+# model -- mono and stereo mixes, the AY built out (AY_ENABLE=0), and the
+# Z80 CLK / 2 AY clock ----
+AY_SIMS  := mono stereo off cpuclk
+
+$(BUILD)/tb_zx_ay_%.vvp: $(BUILD)/src tb_zx_ay.v
+	cd $(BUILD) && $(IVERILOG) -g2012 -Isrc -o $(notdir $@) \
+	  $(if $(filter stereo,$*),-DAY_STEREO) $(if $(filter off,$*),-DAY_OFF) \
+	  $(if $(filter cpuclk,$*),-DAY_CPU_CLK) \
+	  src/*.v ../tb_zx_ay.v
+
+sim_ay: $(foreach v,$(AY_SIMS),$(BUILD)/tb_zx_ay_$(v).vvp) $(BUILD)/rom.mem
+	@cd $(BUILD) && for v in $(AY_SIMS); do \
+	  echo "== $$v"; $(VVP) -n tb_zx_ay_$$v.vvp | tee sim_ay_$$v.log; \
+	  grep -qx PASS sim_ay_$$v.log || exit 1; done
 
 # ---- board ----
 prog: $(BUILD)/top_$(MODE).fs

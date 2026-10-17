@@ -42,6 +42,15 @@
 //     CLOCK_LOC BUFG: one short fabric hop to a BUFG beside J1, then the
 //     global clock network. Keep external CLK <= 10 MHz.
 //
+// AY (chip build, AY_ENABLE): a ZX Spectrum 128-style AY-3-8912
+// (zx_ay.v) on the core's own bus, ports 0xFFFD/0xBFFD. It runs on the
+// 50 MHz crystal at the 128K's 1.77345 MHz AY clock (or Z80 CLK / 2 with
+// AY_CLK_FROM_CPU=1, as wired in a real 128K), with sigma-delta audio on
+// two PMOD pins: the A+B+C mono mix on both (AY_STEREO=0, for
+// single-speaker boards fed from one pin) or ABC stereo (AY_STEREO=1).
+// key[1] (H11) toggles it at run time, for machines that already have an
+// AY (128K, +2, add-on).
+//
 // RESET: power-on + key[0] (H10, active HIGH: board pull-down) + header
 // /RESET, asynchronous assertion, release synchronized to the Z80 clock
 // so the first T1 always starts on a clean rising edge.
@@ -65,12 +74,19 @@ module top #(
     parameter BAUD     = 230_400,
     parameter ROM_FILE = "rom.mem",
     parameter ROM_PROTECT_TOP = 16'h2000,       // NASCOM 4.7 ROM is 0x0000-0x1FD9
-    parameter EXTERNAL_BUS = 1'b1               // 1: chip build (J3 is the live CPU bus); 0: BASIC sbc build
+    parameter EXTERNAL_BUS = 1'b1,              // 1: chip build (J3 is the live CPU bus); 0: BASIC sbc build
+    parameter AY_ENABLE = 1'b1,                 // chip build: built-in AY on the core's bus (zx_ay.v)
+    parameter AY_STEREO = 1'b0,                 // audio_l/r: 0 both A+B+C, 1 A+B/2 / C+B/2
+    parameter AY_CLK_FROM_CPU = 1'b0            // AY clock: 0 fixed 1.77345 MHz, 1 Z80 CLK / 2
 ) (
     input  wire       clk,       // 50 MHz crystal (E2)
     input  wire       uart_rx,   // BL616 -> FPGA serial (B3)
     output wire       uart_tx,   // FPGA -> BL616 serial (C3)
     input  wire [1:0] key,       // push-buttons, ACTIVE HIGH (H10, H11)
+
+    // AY audio, sigma-delta at 50 MHz: RC low-pass each pin (see README).
+    output wire       audio_l,
+    output wire       audio_r,
 
     // Z80 bus on J3 (pinout in tang_primer_25k.cst). chip build: CLK, WAIT,
     // INT, NMI, BUSREQ, RESET are inputs, D is bidirectional, and address /
@@ -364,6 +380,61 @@ module top #(
     end endgenerate
     assign z80_halt_n = halt_n;
 
+    // ---- AY-3-8912 (ZX Spectrum 128 ports, chip build) ----
+    wire       ay_rd_active;
+    wire [7:0] ay_rd_data;
+    generate if (EXTERNAL_BUS && AY_ENABLE) begin : g_ay
+        // key[1] toggles the AY: synchronized, ~21 ms debounce lockout
+        // after each change. Starts enabled. The first lockout period after
+        // configuration only learns the button's idle level, so a pin that
+        // reads high at power-on cannot switch the AY off by itself.
+        reg [1:0]  ay_key_sync = 2'b00;
+        reg        ay_key_state = 1'b0;
+        reg [19:0] ay_key_lock = 20'hFFFFF;
+        reg        ay_key_armed = 1'b0;
+        reg        ay_on = 1'b1;
+        always @(posedge clk) begin
+            ay_key_sync <= {ay_key_sync[0], key[1]};
+            if (!ay_key_armed) begin
+                ay_key_state <= ay_key_sync[1];
+                if (ay_key_lock != 0) ay_key_lock <= ay_key_lock - 1'b1;
+                else                  ay_key_armed <= 1'b1;
+            end else if (ay_key_lock != 0)
+                ay_key_lock <= ay_key_lock - 1'b1;
+            else if (ay_key_sync[1] != ay_key_state) begin
+                ay_key_state <= ay_key_sync[1];
+                ay_key_lock  <= 20'hFFFFF;
+                if (ay_key_sync[1]) ay_on <= !ay_on;
+            end
+        end
+
+        wire ay_l, ay_r, ay_mono;
+        zx_ay #(.CLK_HZ(50_000_000), .AY_CLK_FROM_CPU(AY_CLK_FROM_CPU)) ay (
+            .clk        (clk),
+            .clk_z80    (clk_z80),
+            .reset_n    (cpu_reset_n),
+            .enable     (ay_on),
+            .addr       (addr),
+            .data_out   (data_out),
+            .m1_n       (m1_n),
+            .iorq_n     (iorq_n),
+            .rd_n       (rd_n),
+            .wr_n       (wr_n),
+            .rd_active  (ay_rd_active),
+            .rd_data    (ay_rd_data),
+            .audio_l    (ay_l),
+            .audio_r    (ay_r),
+            .audio_mono (ay_mono)
+        );
+        assign audio_l = AY_STEREO ? ay_l : ay_mono;
+        assign audio_r = AY_STEREO ? ay_r : ay_mono;
+    end else begin : g_no_ay
+        assign ay_rd_active = 1'b0;
+        assign ay_rd_data   = 8'hFF;
+        assign audio_l      = 1'b0;
+        assign audio_r      = 1'b0;
+    end endgenerate
+
     // ---- 64 KiB block RAM, ROM image preloaded at configuration ----
     reg [7:0] ram [0:65535];
     initial $readmemh(ROM_FILE, ram);
@@ -480,8 +551,9 @@ module top #(
     assign soc_int_n = ((rie && rx_avail) || (tie && tx_ready)) ? 1'b0 : 1'b1;
 
     // Data-bus input mux. INTA in IM 1 ignores the bus; 0xFF = RST 38h.
+    // IN 0xFFFD is answered by the AY; z80_d stays released (a read).
     always @(*) begin
-        if (EXTERNAL_BUS)     data_in = z80_d;
+        if (EXTERNAL_BUS)     data_in = ay_rd_active ? ay_rd_data : z80_d;
         else if (inta_active) data_in = 8'hFF;
         else if (iord_active) data_in = io_dout;
         else                  data_in = ram_dout;
