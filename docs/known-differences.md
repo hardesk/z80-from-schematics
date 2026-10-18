@@ -29,6 +29,7 @@ Status legend:
 | 12 | `INI` / `IND` / `INIR` / `INDR` flag set      | undocumented / flag       | watching |
 | 13 | `LDIR` / `LDDR` Q-leak into next instruction  | undocumented / flag       | watching |
 | 14 | Pin-scenario vs perfectz80 (informational)    | timing                    | watching |
+| 16 | RESET / INT / NMI sweep vs perfectz80         | timing / interrupt        | watching |
 
 Notes for each row:
 
@@ -195,6 +196,27 @@ Notes for each row:
        ends the last Tw (the original 2× RTL double-latched).
      Watching: fold the reset / BUSREQ settle into the RTL once the
      pin-scenario gates become hard.
+
+ 16. RESET / INT / NMI sweep vs perfectz80 (`make event_sweep`, see
+     [event-sweep.md](event-sweep.md)) — pulses at every T-state of 13
+     instructions, diffed per half-cycle against perfectz80. 1478 of
+     2287 cases differ, all listed in `tests/event_sweep/baseline.txt`
+     (CI fails on any new or changed difference). The differences, in
+     perfectz80's terms:
+     - INT / NMI arriving in the high half of the last T-state is taken
+       one instruction later than RZ80 takes it (RZ80 samples at the
+       falling edge in T_last, `docs/clocking.md`).
+     - NMI pulses that span no falling edge are still taken (the input
+       latch is transparent in both clock halves); RZ80 misses them.
+     - A second NMI during the NMI response is lost; RZ80 re-enters.
+     - After RETN with INT pending, one instruction runs before INTA.
+     - HALT is released in T4's low half when an interrupt ends it, and
+       never asserted if the interrupt is pending at the HALT fetch.
+     - RESET is sampled at rising edges, the current bus cycle finishes,
+       T1 comes 3 rising edges after release, SP / BC / DE / HL are kept
+       (row 1), and RESET covering only the rising edge into an M1 T2 is
+       a special reset that keeps I. RZ80 resets asynchronously and
+       restarts on the first rising edge (row 15).
 
 Add rows as new differences are discovered. Each "watching" row should gain a
 test that pins the chosen behaviour or escalates it.
