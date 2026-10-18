@@ -170,13 +170,21 @@ $(BUILD)/top_%.synth.json: $(BUILD)/src $(BUILD)/rom.mem $(VENV)/.ok $(BUILD)/ay
 NEXTPNR_PROGRESS := grep --line-buffered -E '^(Info: (Pack|Running|Placed|Creating|HeAP|SA |Routing|Router|Max frequency|Program finished|Device util)|Info: +[0-9]*[05]000 \||ERROR|Warning)' \
   | grep --line-buffered -v 'Failed to route net'
 
-# The chip build's timing depends on placement: a placement with hold
-# violations can boot to a garbage screen. Seed 1 routes clean today; after a design change, if
-# the check below fails, try NEXTPNR_SEED_chip=2, 3, ...
-NEXTPNR_SEED_chip ?= 1
+# The chip build's bus timing still depends on placement (see README,
+# Clocking): with the AY, nextpnr's default seed boots but corrupts data,
+# seed 3 is hardware-tested. Hold violations also fail the build. After a
+# design change, re-test on the board, and if it misbehaves try
+# NEXTPNR_SEED_chip=4, 5, ... (empty: nextpnr's default)
+NEXTPNR_SEED_chip ?= 3
 NEXTPNR_SEED_sbc  ?=
 
-$(BUILD)/top_%.pnr.json: $(BUILD)/top_%.synth.json $(BUILD)/tang_primer_25k.cst
+# The seed is baked into the placement: a stamp per build and seed
+# forces a re-P&R when it changes.
+$(BUILD)/seed_%.stamp: FORCE
+	@mkdir -p $(BUILD)
+	@echo '$(NEXTPNR_SEED_$*)' | cmp -s - $@ || echo '$(NEXTPNR_SEED_$*)' > $@
+
+$(BUILD)/top_%.pnr.json: $(BUILD)/top_%.synth.json $(BUILD)/tang_primer_25k.cst $(BUILD)/seed_%.stamp
 	@rm -f $@
 	cd $(BUILD) && { $(NEXTPNR) --top top --json top_$(STEM).synth.json --write top_$(STEM).pnr.json \
 	  --device $(DEVICE) --vopt cst=tang_primer_25k.cst --vopt sspi_as_gpio \

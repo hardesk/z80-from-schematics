@@ -63,12 +63,20 @@ clock, no clock enable, nothing resamples the clock.
   nothing; Gowin's own tools route J1 on its dedicated path. In the sbc
   build z80_clk is an output and the line changes nothing.
 
-  Hold violations still depend on placement, and a placement
-  with them can boot to a garbage screen (the ULA-sound build did, with
-  four violations of up to 0.37 ns). The chip build therefore uses a
-  fixed seed (`NEXTPNR_SEED_chip`, 1) and fails if any hold violation
-  remains; after a design change, rebuild with
-  `make chip NEXTPNR_SEED_chip=2` (3, ...) until one routes clean.
+  Placement still matters. Before the BUFG, a placement with hold
+  violations booted to a garbage screen (four violations of up to
+  0.37 ns), so the build still fails if nextpnr reports any. With the
+  BUFG and the AY, nextpnr's default seed routes clean but corrupts data
+  on the board, while seed 3 runs: the Makefile pins
+  `NEXTPNR_SEED_chip=3`. Two suspects, not yet resolved: on GW5A yosys
+  builds the core's falling-edge async-reset flops (data, WAIT, INT, NMI
+  samplers and the falling-edge half of every bus pin, 44 flops) as
+  rising-edge flops behind a LUT clock inverter, whose output is fabric
+  routed (`CLOCK_LOC "core_int_n_DFFPE_D_CLK" BUFG;` puts it on the
+  global network, but alone did not fix the default seed); and the
+  header pads, which nextpnr does not time. After a design change,
+  re-test on the board and try `make chip NEXTPNR_SEED_chip=4` (5, ...)
+  if it misbehaves.
 
 RESET (power-on, key[0], header /RESET) asserts asynchronously and its
 release is synchronized to the Z80 clock, so the first T1 starts on a
