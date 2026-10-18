@@ -21,6 +21,12 @@
 //
 // With -DAY_OFF the AY is built out (AY_ENABLE=0): every IN must read 55
 // and both audio pins must stay low.
+//
+// With -DBEEPER the program is ULA sound instead: OUT (FE) with MIC, then
+// speaker + MIC, then IN (FE), answered 55 (D6 = EAR high). Both pins must
+// carry (160 + 16 + 48) / 1024 = 0.219, with or without the AY (-DAY_OFF).
+// The IN reply is valid only after WAIT; -DBEEPER_EAR0 inverts both EAR
+// values, so EAR ends low: 176 / 1024 = 0.172.
 
 `timescale 1ns / 1ps
 
@@ -79,8 +85,20 @@ module tb_zx_ay;
     assign wait_n = !(!iorq_n && m1_n && io_clks < 4);
 
     reg [7:0] mem [0:65535];
+`ifdef BEEPER
+    // Like the RP2350, the reply is valid only once WAIT is released: while
+    // held, even-port reads show the opposite EAR bit, which must not stick.
+`ifdef BEEPER_EAR0
+    localparam [7:0] IN_HELD = 8'h40, IN_REPLY = 8'h15;  // EAR 1, then 0
+`else
+    localparam [7:0] IN_HELD = 8'h15, IN_REPLY = 8'h55;  // EAR 0, then 1
+`endif
+    wire [7:0] io_in = (!a[0] && !wait_n) ? IN_HELD : !a[0] ? IN_REPLY : 8'h55;
+`else
+    wire [7:0] io_in = 8'h55;
+`endif
     assign d = (!mreq_n && !rd_n)          ? mem[a] :
-               (!iorq_n && !rd_n && m1_n)  ? 8'h55  : 8'hzz;
+               (!iorq_n && !rd_n && m1_n)  ? io_in  : 8'hzz;
     always @(posedge clk)
         if (!mreq_n && !wr_n) mem[a] <= d;
 
@@ -88,6 +106,12 @@ module tb_zx_ay;
     initial begin
         for (i = 0; i < 65536; i = i + 1) mem[i] = 8'h00;
         i = 0;
+`ifdef BEEPER
+        // LD A,08; OUT (FE),A; LD A,18; OUT (FE),A; IN A,(FE); HALT
+        mem[0] = 8'h3E; mem[1] = 8'h08; mem[2] = 8'hD3; mem[3] = 8'hFE;
+        mem[4] = 8'h3E; mem[5] = 8'h18; mem[6] = 8'hD3; mem[7] = 8'hFE;
+        mem[8] = 8'hDB; mem[9] = 8'hFE; mem[10] = 8'h76;
+`else
         // LD BC,FFFD
         mem[i] = 8'h01; mem[i+1] = 8'hFD; mem[i+2] = 8'hFF; i = i + 3;
         ay_write(7, 8'h3E);                     // mixer: tone A only
@@ -102,6 +126,7 @@ module tb_zx_ay;
         mem[i] = 8'hED; mem[i+1] = 8'h78; i = i + 2;
         mem[i] = 8'h32; mem[i+1] = 8'h03; mem[i+2] = 8'h80; i = i + 3;
         mem[i] = 8'h76;                         // HALT
+`endif
     end
 
     // B=FF; A=reg; OUT (C),A; B=BF; A=val; OUT (C),A
@@ -171,6 +196,7 @@ module tb_zx_ay;
 
         wait (halt_n === 1'b0);
         $display("halted at %0d ns", $time);
+`ifndef BEEPER
         if (AY_ENABLE) begin
             expect8(16'h8000, 8'h0F);
             expect8(16'h8001, 8'h00);
@@ -181,6 +207,7 @@ module tb_zx_ay;
             expect8(16'h8002, 8'h55);
         end
         expect8(16'h8003, 8'h55);
+`endif
 
         // Measure 64 AY tone periods' worth of sigma-delta output
         ones_l = 0; ones_r = 0;
@@ -193,6 +220,17 @@ module tb_zx_ay;
         $display("density L=%0.4f R=%0.4f (%s), tone A flips=%0d (bad=%0d)",
                  fl, fr, AY_STEREO ? "stereo" : "mono", flips, flip_bad);
 
+`ifdef BEEPER
+`ifdef BEEPER_EAR0
+        if (fl < 0.164 || fl > 0.180 || ones_l != ones_r) begin
+            $display("FAIL: ULA sound, expected L == R ~0.172"); errors = errors + 1;
+        end
+`else
+        if (fl < 0.210 || fl > 0.228 || ones_l != ones_r) begin
+            $display("FAIL: ULA sound, expected L == R ~0.219"); errors = errors + 1;
+        end
+`endif
+`else
         if (AY_ENABLE) begin
             if (flips < 100 || flip_bad != 0) begin
                 $display("FAIL: tone A flip interval"); errors = errors + 1;
@@ -220,6 +258,7 @@ module tb_zx_ay;
         end else if (ones_l + ones_r != 0) begin
             $display("FAIL: audio pins must stay low with the AY off"); errors = errors + 1;
         end
+`endif
 
         if (errors == 0) $display("PASS");
         else             $display("FAILED: %0d error(s)", errors);

@@ -65,7 +65,7 @@ endif
 
 CORE_SRCS := $(wildcard $(ROOT)/rtl/*.v)
 CORE_INCS := $(wildcard $(ROOT)/rtl/*.vh)
-SOC_SRCS  := top.v zx_ay.v $(ICEPI)/uart.v
+SOC_SRCS  := top.v zx_ay.v zx_ula_audio.v $(ICEPI)/uart.v
 
 # AY-3-8913 core: git submodule (git submodule update --init)
 AY_DIR    := ../third_party/ay-3-8913/src
@@ -170,15 +170,25 @@ $(BUILD)/top_%.synth.json: $(BUILD)/src $(BUILD)/rom.mem $(VENV)/.ok $(BUILD)/ay
 NEXTPNR_PROGRESS := grep --line-buffered -E '^(Info: (Pack|Running|Placed|Creating|HeAP|SA |Routing|Router|Max frequency|Program finished|Device util)|Info: +[0-9]*[05]000 \||ERROR|Warning)' \
   | grep --line-buffered -v 'Failed to route net'
 
+# The chip build's timing depends on placement: a placement with hold
+# violations can boot to a garbage screen. Seed 1 routes clean today; after a design change, if
+# the check below fails, try NEXTPNR_SEED_chip=2, 3, ...
+NEXTPNR_SEED_chip ?= 1
+NEXTPNR_SEED_sbc  ?=
+
 $(BUILD)/top_%.pnr.json: $(BUILD)/top_%.synth.json $(BUILD)/tang_primer_25k.cst
 	@rm -f $@
 	cd $(BUILD) && { $(NEXTPNR) --top top --json top_$(STEM).synth.json --write top_$(STEM).pnr.json \
-	  --device $(DEVICE) --vopt cst=tang_primer_25k.cst --vopt sspi_as_gpio 2>&1; \
+	  --device $(DEVICE) --vopt cst=tang_primer_25k.cst --vopt sspi_as_gpio \
+	  $(if $(NEXTPNR_SEED_$(STEM)),--seed $(NEXTPNR_SEED_$(STEM))) 2>&1; \
 	  echo $$? > nextpnr_$(STEM).rc; } | tee nextpnr_$(STEM).log | $(NEXTPNR_PROGRESS); \
 	  rc=$$(cat nextpnr_$(STEM).rc); [ "$$rc" = 0 ] || { rm -f top_$(STEM).pnr.json; \
 	  echo "nextpnr failed (exit $$rc), see $(BUILD)/nextpnr_$(STEM).log"; exit 1; }
 	@n=$$(grep -c 'Failed to route net' $(BUILD)/nextpnr_$(STEM).log); \
 	  [ "$$n" -le 1 ] || echo "nextpnr: $$n clock sinks on general routing, expected 1 (see README, Clocking)"
+	@n=$$(grep -c 'ERROR: Hold/min time violation' $(BUILD)/nextpnr_$(STEM).log); \
+	  if [ "$$n" != 0 ]; then echo "nextpnr: $$n hold violations (seed '$(NEXTPNR_SEED_$(STEM))'): try another NEXTPNR_SEED_$(STEM)"; \
+	  rm -f $(BUILD)/top_$(STEM).pnr.json; exit 1; fi
 	@test -f $@
 
 $(BUILD)/top_%.fs: $(BUILD)/top_%.pnr.json
@@ -260,13 +270,15 @@ sim_tiny: $(BUILD)/$(TINY_DIR)/Vtop $(BUILD)/rom_tiny.mem
 	cd $(BUILD) && ./$(TINY_DIR)/Vtop tiny
 
 # ---- AY simulation (Icarus): chip-build top against a Spectrum bus
-# model -- mono and stereo mixes, the AY built out (AY_ENABLE=0), and the
-# Z80 CLK / 2 AY clock ----
-AY_SIMS  := mono stereo off cpuclk
+# model -- mono and stereo mixes, the AY built out (AY_ENABLE=0), the
+# Z80 CLK / 2 AY clock, and ULA sound (beeper/MIC/EAR, with and without
+# the AY; EAR taken from the post-WAIT reply) ----
+AY_SIMS  := mono stereo off cpuclk beeper beeper_off beeper_ear0
 
 $(BUILD)/tb_zx_ay_%.vvp: $(BUILD)/src tb_zx_ay.v
 	cd $(BUILD) && $(IVERILOG) -g2012 -Isrc -o $(notdir $@) \
-	  $(if $(filter stereo,$*),-DAY_STEREO) $(if $(filter off,$*),-DAY_OFF) \
+	  $(if $(filter stereo,$*),-DAY_STEREO) $(if $(filter off beeper_off,$*),-DAY_OFF) \
+	  $(if $(filter beeper%,$*),-DBEEPER) $(if $(filter beeper_ear0,$*),-DBEEPER_EAR0) \
 	  $(if $(filter cpuclk,$*),-DAY_CPU_CLK) \
 	  src/*.v ../tb_zx_ay.v
 

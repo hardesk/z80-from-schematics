@@ -63,6 +63,13 @@ clock, no clock enable, nothing resamples the clock.
   nothing; Gowin's own tools route J1 on its dedicated path. In the sbc
   build z80_clk is an output and the line changes nothing.
 
+  Hold violations still depend on placement, and a placement
+  with them can boot to a garbage screen (the ULA-sound build did, with
+  four violations of up to 0.37 ns). The chip build therefore uses a
+  fixed seed (`NEXTPNR_SEED_chip`, 1) and fails if any hold violation
+  remains; after a design change, rebuild with
+  `make chip NEXTPNR_SEED_chip=2` (3, ...) until one routes clean.
+
 RESET (power-on, key[0], header /RESET) asserts asynchronously and its
 release is synchronized to the Z80 clock, so the first T1 starts on a
 clean rising edge whatever the phase of the release.
@@ -123,18 +130,51 @@ submodule — clone with `--recursive` or run `git submodule update --init`).
 | key[1] (H11) | toggles the AY on/off (starts on; no visible feedback) — use *off* on a 128K/+2 or with an AY add-on, which already answer these ports |
 | Build switches | `AY_ENABLE` (`top.v`); `make AY_STEREO=1` for ABC stereo |
 
-The AY chip and its DACs run on the crystal; only the port decode, the
-write capture and the readback register sit on the Z80 clock, and writes
-and readback cross between the two through synchronizers (`zx_ay.v`).
+The AY chip runs on the crystal, like the DACs in `top.v`; only the port
+decode, the write capture and the readback register sit on the Z80
+clock, and writes and readback cross between the two through
+synchronizers (`zx_ay.v`).
 A stopped or slow Z80 CLK therefore does not stop the sound.
 
-Audio leaves as two 50 MHz sigma-delta bitstreams (0/3.3 V) on one dock
-PMOD:
+Quick check from BASIC (≈554 Hz tone on A, then read R8 back → 15;
+silence with `OUT 65533,8: OUT 49149,0`):
+
+    OUT 65533,7: OUT 49149,62
+    OUT 65533,8: OUT 49149,15
+    OUT 65533,0: OUT 49149,200
+    OUT 65533,1: OUT 49149,0
+    OUT 65533,8: PRINT IN 65533
+
+## ULA sound: beeper, MIC and tape EAR (chip build)
+
+The host's ULA (the RP2350 driver) answers port FE, but the FPGA sees the
+same cycles, so `zx_ula_audio.v` rebuilds the sound a Spectrum's speaker
+would make and `top.v` adds it to both PMOD pins, whether the AY is on,
+off (key[1]) or built out:
+
+| Source | Bus | Level (of 1024) |
+|---|---|---|
+| Speaker (beeper) | `OUT` to an even port, D4 | 160 |
+| EAR (tape input) | `IN` from an even port, D6 as the host answered it | 48 |
+| MIC (tape output) | `OUT` to an even port, D3 | 16 |
+
+EAR is taken from the host's reply after WAIT is released, so a read
+that is still being served never reaches the output. Tape loading is
+audible with the driver's normal tape mode; fast mode feeds no pulses
+and stays silent. With the AY peaking at 765, the sum peaks at 989.
+
+Quick check from BASIC: `BEEP 1,0` (440 Hz for a second); `LOAD ""` with a
+tape playing in normal mode gives the loading noise.
+
+## Audio output
+
+Audio (AY + ULA) leaves as two 50 MHz sigma-delta bitstreams (0/3.3 V)
+on one dock PMOD:
 
 | PMOD pin | Ball | `AY_STEREO=0` (default) | `AY_STEREO=1` |
 |---|---|---|---|
-| 1 (IO0) | D11 | `audio_l` = A + B + C | `audio_l` = A + B/2 |
-| 2 (IO1) | G11 | `audio_r` = A + B + C | `audio_r` = C + B/2 |
+| 1 (IO0) | D11 | `audio_l` = A + B + C + ULA | `audio_l` = A + B/2 + ULA |
+| 2 (IO1) | G11 | `audio_r` = A + B + C + ULA | `audio_r` = C + B/2 + ULA |
 | 5, 11 | — | GND | GND |
 
 **MuseLab PMOD-AUDIO v1.2** (iCESugar, "MUSE" silk) plugs straight in. Its
@@ -158,15 +198,6 @@ PAM8403/TPA31xx board):
 Peak level is about 2.5 Vpp, which is hot for a line input; start with
 the amp's volume low. Never drive a speaker from a PMOD pin directly, and
 never ground the speaker minus of a class-D (bridged) amp.
-
-Quick check from BASIC (≈554 Hz tone on A, then read R8 back → 15;
-silence with `OUT 65533,8: OUT 49149,0`):
-
-    OUT 65533,7: OUT 49149,62
-    OUT 65533,8: OUT 49149,15
-    OUT 65533,0: OUT 49149,200
-    OUT 65533,1: OUT 49149,0
-    OUT 65533,8: PRINT IN 65533
 
 ## Toolchain — venv, no system packages
 

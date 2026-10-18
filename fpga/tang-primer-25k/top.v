@@ -51,6 +51,11 @@
 // key[1] (H11) toggles it at run time, for machines that already have an
 // AY (128K, +2, add-on).
 //
+// ULA sound (chip build): the beeper (OUT FE D4), MIC (D3) and the tape
+// EAR input as the host answers IN FE (D6) are rebuilt from the same bus
+// (zx_ula_audio.v) and added to both PMOD pins, whether the AY is on, off
+// or built out.
+//
 // RESET: power-on + key[0] (H10, active HIGH: board pull-down) + header
 // /RESET, asynchronous assertion, release synchronized to the Z80 clock
 // so the first T1 always starts on a clean rising edge.
@@ -84,7 +89,7 @@ module top #(
     output wire       uart_tx,   // FPGA -> BL616 serial (C3)
     input  wire [1:0] key,       // push-buttons, ACTIVE HIGH (H10, H11)
 
-    // AY audio, sigma-delta at 50 MHz: RC low-pass each pin (see README).
+    // AY + ULA audio, sigma-delta at 50 MHz: RC low-pass each pin (see README).
     output wire       audio_l,
     output wire       audio_r,
 
@@ -383,6 +388,7 @@ module top #(
     // ---- AY-3-8912 (ZX Spectrum 128 ports, chip build) ----
     wire       ay_rd_active;
     wire [7:0] ay_rd_data;
+    wire [9:0] ay_mix_l, ay_mix_r, ay_mix_mono;
     generate if (EXTERNAL_BUS && AY_ENABLE) begin : g_ay
         // key[1] toggles the AY: synchronized, ~21 ms debounce lockout
         // after each change. Starts enabled. The first lockout period after
@@ -408,7 +414,6 @@ module top #(
             end
         end
 
-        wire ay_l, ay_r, ay_mono;
         zx_ay #(.CLK_HZ(50_000_000), .AY_CLK_FROM_CPU(AY_CLK_FROM_CPU)) ay (
             .clk        (clk),
             .clk_z80    (clk_z80),
@@ -422,17 +427,51 @@ module top #(
             .wr_n       (wr_n),
             .rd_active  (ay_rd_active),
             .rd_data    (ay_rd_data),
-            .audio_l    (ay_l),
-            .audio_r    (ay_r),
-            .audio_mono (ay_mono)
+            .mix_l      (ay_mix_l),
+            .mix_r      (ay_mix_r),
+            .mix_mono   (ay_mix_mono)
         );
-        assign audio_l = AY_STEREO ? ay_l : ay_mono;
-        assign audio_r = AY_STEREO ? ay_r : ay_mono;
     end else begin : g_no_ay
         assign ay_rd_active = 1'b0;
         assign ay_rd_data   = 8'hFF;
-        assign audio_l      = 1'b0;
-        assign audio_r      = 1'b0;
+        assign ay_mix_l     = 10'd0;
+        assign ay_mix_r     = 10'd0;
+        assign ay_mix_mono  = 10'd0;
+    end endgenerate
+
+    // ---- ULA sound and the PMOD DACs (chip build) ----
+    // Levels in DAC steps (10 bits): the speaker dominates, EAR is quieter
+    // and MIC is a small step on the same pin, as on a real Spectrum. The
+    // AY peaks at 765, so the sum peaks at 989 and cannot wrap.
+    localparam [9:0] SPEAKER_LEVEL = 10'd160, EAR_LEVEL = 10'd48, MIC_LEVEL = 10'd16;
+    generate if (EXTERNAL_BUS) begin : g_audio
+        wire speaker, mic, ear;
+        zx_ula_audio ula_audio (
+            .clk_z80 (clk_z80), .reset_n (cpu_reset_n),
+            .addr (addr), .data_out (data_out), .data_in (data_in),
+            .m1_n (m1_n), .iorq_n (iorq_n), .rd_n (rd_n), .wr_n (wr_n),
+            .speaker (speaker), .mic (mic), .ear (ear)
+        );
+        // CDC: three levels that change at most once per I/O cycle.
+        reg [2:0] ula_s1 = 3'b000, ula_s2 = 3'b000;
+        reg [1:0] rst_s = 2'b00;
+        always @(posedge clk) begin
+            ula_s1 <= {speaker, mic, ear};
+            ula_s2 <= ula_s1;
+            rst_s  <= {rst_s[0], cpu_reset_n};
+        end
+        wire [9:0] ula = (ula_s2[2] ? SPEAKER_LEVEL : 10'd0) +
+                         (ula_s2[1] ? MIC_LEVEL     : 10'd0) +
+                         (ula_s2[0] ? EAR_LEVEL     : 10'd0);
+        wire [9:0] mix_l = (AY_STEREO ? ay_mix_l : ay_mix_mono) + ula;
+        wire [9:0] mix_r = (AY_STEREO ? ay_mix_r : ay_mix_mono) + ula;
+        pwm #(.VALUE_BITS(10)) dac_l (
+            .clk(clk), .reset(!rst_s[1]), .value(mix_l), .out(audio_l));
+        pwm #(.VALUE_BITS(10)) dac_r (
+            .clk(clk), .reset(!rst_s[1]), .value(mix_r), .out(audio_r));
+    end else begin : g_no_audio
+        assign audio_l = 1'b0;
+        assign audio_r = 1'b0;
     end endgenerate
 
     // ---- 64 KiB block RAM, ROM image preloaded at configuration ----

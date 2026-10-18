@@ -32,8 +32,8 @@
 //     The core's /8 prescaler tick is then every 16 Z80 CLKs.
 //
 // Output: ABC stereo (L = A + B/2, R = C + B/2, both scaled x2 to stay
-// integer) and their mono sum, each as a first-order sigma-delta bitstream
-// at the crystal clock. An RC low-pass on the pin is the DAC.
+// integer) and their mono sum, as 10-bit levels at the crystal clock;
+// top.v adds the ULA's sound (zx_ula_audio.v) and drives the DACs.
 
 module zx_ay #(
     parameter CLK_HZ          = 50_000_000, // clk (crystal) frequency
@@ -57,9 +57,9 @@ module zx_ay #(
     output wire        rd_active,           // clk_z80: put rd_data on the core's data_in
     output wire [7:0]  rd_data,
 
-    output wire        audio_l,             // clk domain
-    output wire        audio_r,
-    output wire        audio_mono
+    output wire [9:0]  mix_l,               // clk domain; 0 while reset or disabled
+    output wire [9:0]  mix_r,
+    output wire [9:0]  mix_mono
 );
     // ================= clk_z80 domain =================
     reg [1:0] en_z = 2'b00;
@@ -178,17 +178,10 @@ module zx_ay #(
     assign ay_dout_q    = dout_q;
     assign ay_dout_en_q = dout_en_q;
 
-    // ---- ABC stereo mix and sigma-delta DACs ----
+    // ---- ABC stereo mix ----
     // 2A+B and 2C+B peak at 765 of 1023 (10 bits); A+B+C peaks at 765 too.
-    wire [9:0] mix_l    = {1'b0, vol_a, 1'b0} + {2'b00, vol_b};
-    wire [9:0] mix_r    = {1'b0, vol_c, 1'b0} + {2'b00, vol_b};
-    wire [9:0] mix_mono = {2'b00, vol_a} + {2'b00, vol_b} + {2'b00, vol_c};
-    wire       dac_reset = !ay_rst_n || !enable;
-
-    pwm #(.VALUE_BITS(10)) dac_l (
-        .clk(clk), .reset(dac_reset), .value(mix_l), .out(audio_l));
-    pwm #(.VALUE_BITS(10)) dac_r (
-        .clk(clk), .reset(dac_reset), .value(mix_r), .out(audio_r));
-    pwm #(.VALUE_BITS(10)) dac_mono (
-        .clk(clk), .reset(dac_reset), .value(mix_mono), .out(audio_mono));
+    wire mute = !ay_rst_n || !enable;
+    assign mix_l    = mute ? 10'd0 : {1'b0, vol_a, 1'b0} + {2'b00, vol_b};
+    assign mix_r    = mute ? 10'd0 : {1'b0, vol_c, 1'b0} + {2'b00, vol_b};
+    assign mix_mono = mute ? 10'd0 : {2'b00, vol_a} + {2'b00, vol_b} + {2'b00, vol_c};
 endmodule
